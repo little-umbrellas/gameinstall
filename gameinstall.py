@@ -1,112 +1,99 @@
 #!/usr/bin/python3
 
+from pathlib import Path
 import fnmatch
 import os
 import sys
 
-def find_file(root_path, file_pattern, file_list):
+def find_file(file_pattern: str, matches: list[str], root_path=".") -> bool:
+    foundFile = False
     for root, _, files in os.walk(root_path):
         for file in files:
-            if fnmatch.fnmatch(file.lower(), file_pattern):
-                file_list.append(os.path.join(root, file))
+            if fnmatch.fnmatch(file, file_pattern):
+                if not foundFile:
+                    foundFile = True
+                matches.append(os.path.join(root, file))
+    return foundFile
 
-def dirtree(path, start, stop=None, step=1):
-    dirname = os.path.normpath(path).split(os.sep)[start:stop:step]
-    return os.path.join(*['/' if ent == '' else ent for ent in dirname])
-
-def choose_file(path_list, start, stop=None):
+def choose_file(files: list[str]) -> str:
     while True:
-        count = 0
+        idx = 0
         print()
-        for ent in path_list:
-            count += 1
-            print(f"[{count}] {dirtree(ent, start, stop)}")
-
-        choice = input(f"Choose one [1..{count}, q (quit)]: ")
-        if choice == 'q':
+        for file in files:
+            idx += 1
+            print(f"[{idx}] {file}")
+        choice = input(f"Choose file [1..{idx}], [q]uit: ")
+        if choice.lower() == 'q' or choice.lower() == "quit":
             sys.exit(2)
-
         try:
             choice = int(choice)
         except:
-            print("\nERROR: Invalid input. It must be an integer or the letter q. Try again.", file=sys.stderr)
+            print(f"\nERROR: Input must be an integer or q for quit", file=sys.stderr)
             continue
-
-        if choice < 1 or choice > count:
-            print(f"\nERROR: Input not in range (1..{count}). Try again.", file=sys.stderr)
+        if choice < 1 or choice > idx:
+            print(f"\nERROR: Choice is out of range", file=sys.stderr)
             continue
-
-        return path_list[choice-1]
+        return files[choice-1]
 
 HOME = os.getenv("HOME")
 assert(HOME)
-DOWNLOADSDIR = os.path.join(HOME, "Downloads")
-GAMESDIR = os.path.join(HOME, ".wine", "drive_c", "Games")
-DESKTOPDIR = os.path.join(HOME, "Desktop")
 
-installable = []
-find_file(DOWNLOADSDIR, "setup*.exe", installable)
+DOWNLOADS = os.path.join(HOME, "Downloads")
+GAMES     = os.path.join(HOME, ".wine", "drive_c", "Games")
+DESKTOP   = os.path.join(HOME, "Desktop")
+assert(os.path.exists(DOWNLOADS))
+assert(os.path.exists(GAMES))
+assert(os.path.exists(DESKTOP))
 
-if not installable:
-    print(f"ERROR: No setup file was found in '{DOWNLOADSDIR}'", file=sys.stderr)
+os.chdir(DOWNLOADS)
+
+setup_files = []
+if not find_file("setup*.exe", setup_files):
+    print("\nERROR: No setup files were found", file=sys.stderr)
     sys.exit(1)
 
-installable.sort(key=os.path.getctime)
-mostrecent_installable = dirtree(installable[0], -2, -1)
+setup_files.sort(key=os.path.getmtime, reverse=True)
+confirm = input(f"Is '{setup_files[0]}' the game you want to install? [Y/n]: ")
 
-confirmation = input(f"Install '{mostrecent_installable}'? [y/N] ")
-if confirmation.lower() == 'y':
-    setup_file = installable[0]
-elif len(installable) > 1:
-    installable.pop(0)
-    setup_file = choose_file(installable, -2, -1)
+if confirm.lower() == "n":
+    setup_files.pop(0)
+    setup = choose_file(setup_files)
 else:
-    print("\nERROR: Unexpected error")
+    setup = setup_files[0]
+
+before_install = os.listdir(GAMES)
+ret = os.system("wine '" + setup + "'")
+if not ret:
+    print("WARNING: Non-zero exit code returned from wine", file=sys.stderr)
+after_install  = os.listdir(GAMES)
+
+new_games = [n for n in after_install if n not in before_install]
+if not new_games:
+    print("ERROR: Installation unsuccessful", file=sys.stderr)
     sys.exit(1)
 
-before_install = os.listdir(GAMESDIR)
+os.chdir(GAMES)
 
-winecmd = "wine '" + setup_file + "'"
-res = os.system(winecmd)
-if res:
-    print("\nWARNING: Non-zero return code from wine", file=sys.stderr)
+exe_files = []
+for n in new_games:
+    if os.path.isdir(n):
+        find_file("*.exe", exe_files, n)
 
-after_install = os.listdir(GAMESDIR)
-
-new_entries = []
-for ent in after_install:
-    if ent not in before_install:
-        new_entries.append(os.path.join(GAMESDIR, ent))
-
-if not new_entries:
-    print("\nERROR: Installation unsuccessful", file=sys.stderr)
+if not exe_files:
+    print("\nERROR: No exe files were found", file=sys.stderr)
     sys.exit(1)
 
-executables = []
-for ent in new_entries:
-    find_file(ent, "*.exe", executables)
-
-if not executables:
-    print("\nERROR: No executables were found", file=sys.stderr)
-    sys.exit(1)
-elif len(executables) > 1:
-    print("\nMultiple exe files were found:")
-    exe_path = choose_file(executables, -2)
+if len(exe_files) > 1:
+    exe = choose_file(exe_files)
 else:
-    exe_path = executables[0]
+    exe = exe_files[0]
 
-if not exe_path:
-    print("\nERROR: Executable not found")
-    sys.exit(1)
+game_name     = str(Path(exe).parent)
+game_path     = os.path.join(GAMES, game_name)
+launcher_file = os.path.join(DESKTOP, game_name + ".command")
 
-game_dir = os.path.dirname(exe_path)
-game_name = dirtree(game_dir, -1) + ".command"
-shortcut_path = os.path.join(DESKTOPDIR, game_name)
-exe = dirtree(exe_path, -1)
-
-with open(shortcut_path, 'w') as file:
-    file.write("#!/bin/sh\n")
-    file.write("cd '" + game_dir + "'\n")
-    file.write("wine '" + exe + "'")
-
-os.chmod(shortcut_path, 0o755)
+fd = os.open(launcher_file, os.O_WRONLY|os.O_CREAT, mode=0o755)
+with open(fd, 'w') as f:
+    f.write("#!/bin/sh\n")
+    f.write("cd '" + game_path + "'\n")
+    f.write("wine '" + exe.replace(game_name + os.sep, "") + "'")
